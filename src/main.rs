@@ -1,0 +1,145 @@
+// This file is derived from https://github.com/bbannier/spicy-format
+// Original code is distributed under the MIT License.
+// 
+// MIT License
+//
+// Copyright (c) 2023 Benjamin Bannier
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+use {
+    clap::Parser,
+    miette::{ensure, Context, Diagnostic, Result},
+    rayon::iter::{IntoParallelRefIterator, ParallelIterator},
+    symon_format::format,
+    std::{io::Read, path::PathBuf},
+    thiserror::Error,
+};
+
+#[derive(Parser)]
+#[clap(version = version())]
+struct Args {
+    #[clap(
+        help = "input files to operate on",
+        long_help = "if not provided read input from stdin"
+    )]
+    input_files: Vec<PathBuf>,
+
+    #[clap(short, long, help = "skip idempotency check")]
+    skip_idempotence: bool,
+
+    #[clap(short, long, help = "reject inputs with parse errors")]
+    reject_parse_errors: bool,
+
+    #[clap(long, short, help = "format file in place")]
+    inplace: bool,
+}
+
+#[derive(Error, Debug, Diagnostic)]
+enum Error {
+    #[error("I/O error")]
+    Io(#[from] std::io::Error),
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    miette::set_hook(Box::new(|_| {
+        Box::new(
+            miette::MietteHandlerOpts::new()
+                .tab_width(4)
+                .context_lines(3)
+                .with_cause_chain()
+                .build(),
+        )
+    }))?;
+
+    let format = |code: &str, source: &str| {
+        format(code, args.skip_idempotence, !args.reject_parse_errors)
+            .wrap_err(format!("while formatting '{source}'"))
+    };
+
+    if args.input_files.is_empty() {
+        let stdin = std::io::stdin();
+        let mut buf = String::new();
+        stdin
+            .lock()
+            .read_to_string(&mut buf)
+            .map_err(Error::Io)
+            .wrap_err("while reading input from stdin")?;
+
+        // When printing the result do not insert extra newlines.
+        let formatted = format(&buf, "<stdin>")?;
+        print!("{formatted}");
+    } else {
+        let failed = args
+            .input_files
+            .par_iter()
+            .filter_map(|input_file| {
+                let source = match std::fs::read_to_string(input_file)
+                    .map_err(Error::Io)
+                    .wrap_err(format!("while reading input file {}", input_file.display()))
+                {
+                    Err(e) => {
+                        eprintln!("{e:?}");
+                        return Some(input_file);
+                    }
+                    Ok(s) => s,
+                };
+
+                let formatted = match format(&source, &input_file.display().to_string()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("{e:?}");
+                        return Some(input_file);
+                    }
+                };
+
+                if args.inplace {
+                    // Only write output file if we made any changes.
+                    if source != formatted {
+                        if let Err(e) = std::fs::write(input_file, formatted)
+                            .map_err(Error::Io)
+                            .wrap_err(format!(
+                                "while writing output file {}",
+                                input_file.display()
+                            ))
+                        {
+                            eprintln!("{e:?}");
+                            return Some(input_file);
+                        }
+                    }
+                } else {
+                    // When printing the result do not insert extra newlines.
+                    print!("{formatted}");
+                }
+
+                None
+            })
+            .count();
+
+        ensure!(failed == 0, "could not format {failed} file(s)");
+    }
+
+    Ok(())
+}
+
+fn version() -> &'static str {
+    option_env!("VERGEN_GIT_DESCRIBE").unwrap_or_else(|| env!("CARGO_PKG_VERSION"))
+}
