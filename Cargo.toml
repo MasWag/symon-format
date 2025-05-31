@@ -1,0 +1,20 @@
+[package]
+name = "symon-format"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/MasWag/symon-format.git"
+
+[dependencies]
+clap = { version = "4.5.39", features = ["derive"] }
+miette = { version = "7.6.0", features = ["fancy"] }
+rayon = "1.10.0"
+thiserror = "2.0.12"
+topiary-core = "0.6.1"
+topiary-tree-sitter-facade = "0.6.1"
+tree-sitter-symon = { git = "https://github.com/MasWag/tree-sitter-symon.git", version = "0.0.1" }
+
+[dev-dependencies]
+assert_cmd = "2.0.17"
+pretty_assertions = "1.4.1"
+walkdir = "2.5.0"
